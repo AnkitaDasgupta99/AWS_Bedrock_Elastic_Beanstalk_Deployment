@@ -4,29 +4,85 @@ import sys
 import boto3
 import streamlit as st
 
-## We will be suing Titan Embeddings Model To generate Embedding
+# Access secrets directly
+access_key = st.secrets["AWS_ACCESS_KEY_ID"]
+secret_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
 
-from langchain_community.embeddings import BedrockEmbeddings
-from langchain.llms.bedrock import Bedrock
+client = boto3.client(
+    'bedrock-runtime',
+    aws_access_key_id=access_key,
+    aws_secret_access_key=secret_key,
+    region_name=st.secrets["AWS_DEFAULT_REGION"]
+)
+
+## We will be using Titan Embeddings Model To generate Embedding
+
+# Robust BedrockEmbeddings import: don't crash at import time; record failure instead
+try:
+    from langchain_community.embeddings import BedrockEmbeddings
+except Exception:
+    try:
+        from langchain_community.embeddings.bedrock import BedrockEmbeddings
+    except Exception:
+        BedrockEmbeddings = None
+        _bedrock_embeddings_import_error = (
+            "Could not import BedrockEmbeddings from langchain_community. "
+            "Install/upgrade in your virtualenv: pip install -U langchain-community"
+        )
+    else:
+        _bedrock_embeddings_import_error = None
+else:
+    _bedrock_embeddings_import_error = None
+
+# Robust Bedrock LLM import
+# Robust Bedrock LLM import for 2026
+try:
+    from langchain_aws import ChatBedrock as Bedrock
+    _bedrock_llm_import_error = None
+except Exception:
+    try:
+        from langchain_aws import BedrockLLM as Bedrock
+        _bedrock_llm_import_error = None
+    except Exception:
+        Bedrock = None
+        _bedrock_llm_import_error = (
+            "Could not import Bedrock LLM from langchain_aws. "
+            "Run: pip install -U langchain-aws"
+        )
+
+else:
+    _bedrock_llm_import_error = None
 
 ## Data Ingestion
 
 import numpy as np
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 
 # Vector Embedding And Vector Store
 
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 
 ## LLm Models
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain_core.prompts import PromptTemplate
+from langchain_classic.chains import RetrievalQA
+
 
 ## Bedrock Clients
-bedrock=boto3.client(service_name="bedrock-runtime")
-bedrock_embeddings=BedrockEmbeddings(model_id="amazon.titan-embed-text-v1",client=bedrock)
+def get_bedrock_client():
+    try:
+        return boto3.client(service_name="bedrock-runtime")
+    except Exception as e:
+        raise RuntimeError(f"Failed to create Bedrock boto3 client: {e}")
 
+def get_bedrock_embeddings():
+    if BedrockEmbeddings is None:
+        raise ImportError(_bedrock_embeddings_import_error)
+    client = get_bedrock_client()
+    try:
+        return BedrockEmbeddings(model_id="amazon.titan-embed-text-v1", client=client)
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize BedrockEmbeddings: {e}")
 
 ## Data ingestion
 def data_ingestion():
@@ -43,31 +99,36 @@ def data_ingestion():
 ## Vector Embedding and vector store
 
 def get_vector_store(docs):
-    vectorstore_faiss=FAISS.from_documents(
-        docs,
-        bedrock_embeddings
-    )
+    embeddings = get_bedrock_embeddings()
+    vectorstore_faiss = FAISS.from_documents(docs, embeddings)
     vectorstore_faiss.save_local("faiss_index")
-
-def get_claude_llm():
-    ##create the Anthropic Model
-    llm=Bedrock(model_id="ai21.j2-mid-v1",client=bedrock,
-                model_kwargs={'maxTokens':512})
-    
-    return llm
+#
+# def get_claude_llm():
+#     if Bedrock is None:
+#         raise ImportError(_bedrock_llm_import_error)
+#     client = get_bedrock_client()
+#     # Updated to Claude 3.5 Sonnet for 2026
+#     llm = Bedrock(model_id="anthropic.claude-3-5-sonnet-20240620-v1:0", client=client, model_kwargs={'max_tokens': 512})
+#     return llm
 
 def get_llama2_llm():
-    ##create the Anthropic Model
-    llm=Bedrock(model_id="meta.llama2-70b-chat-v1",client=bedrock,
-                model_kwargs={'max_gen_len':512})
-    
+    if Bedrock is None:
+        raise ImportError(_bedrock_llm_import_error)
+    client = get_bedrock_client()
+    llm = Bedrock(
+        model_id="us.meta.llama3-1-70b-instruct-v1:0", # Use the profile ID
+        client=client,
+        model_kwargs={'max_tokens': 512} # Updated parameter name
+    )
     return llm
+
+
 
 prompt_template = """
 
 Human: Use the following pieces of context to provide a 
 concise answer to the question at the end but usse atleast summarize with 
-250 words with detailed explaantions. If you don't know the answer, 
+250 words with detailed explantions. If you don't know the answer, 
 just say that you don't know, don't try to make up an answer.
 <context>
 {context}
@@ -108,40 +169,33 @@ def main():
         if st.button("Vectors Update"):
             with st.spinner("Processing..."):
                 docs = data_ingestion()
-                get_vector_store(docs)
-                st.success("Done")
+                try:
+                    get_vector_store(docs)
+                    st.success("Done")
+                except Exception as e:
+                    st.error(f"Failed to create/update vector store: {e}")
 
-    if st.button("Claude Output"):
-        with st.spinner("Processing..."):
-            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings)
-            llm=get_claude_llm()
-            
-            #faiss_index = get_vector_store(docs)
-            st.write(get_response_llm(llm,faiss_index,user_question))
-            st.success("Done")
+    # if st.button("Claude Output"):
+    #     with st.spinner("Processing..."):
+    #         try:
+    #             embeddings = get_bedrock_embeddings()
+    #             faiss_index = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    #             llm = get_claude_llm()
+    #             st.write(get_response_llm(llm, faiss_index, user_question))
+    #             st.success("Done")
+    #         except Exception as e:
+    #             st.error(f"Error: {e}")
 
     if st.button("Llama2 Output"):
         with st.spinner("Processing..."):
-            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings)
-            llm=get_llama2_llm()
-            
-            #faiss_index = get_vector_store(docs)
-            st.write(get_response_llm(llm,faiss_index,user_question))
-            st.success("Done")
+            try:
+                embeddings = get_bedrock_embeddings()
+                faiss_index = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization= True)
+                llm = get_llama2_llm()
+                st.write(get_response_llm(llm, faiss_index, user_question))
+                st.success("Done")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
