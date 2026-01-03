@@ -1,6 +1,11 @@
-boto3
-awscli
-pypdf
-langchain
+langchain-core
+langchain-classic
+#faiss-cpu
+# pypdf
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-aws>=0.2.0
+langchain-text-splitters
+boto3>=1.34.0
 streamlit
-faiss-cpu
+langchain-openai
